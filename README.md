@@ -167,6 +167,20 @@ That is why one scheduled arrival delivers a *burst* of messages (`-Dgateway.bat
 which is also what a real market-data feed does. Run configuration 12 reproduces the degenerate
 single-message case, and it is worth doing once.
 
+The same command on the Linux CI runner, for contrast — this is not a small difference:
+
+| | Windows 11 laptop | Linux CI runner |
+|---|---|---|
+| clocksource | QueryPerformanceCounter | `tsc` |
+| cost of one call | 29 ns | 17 ns |
+| smallest non-zero delta | **99 ns** | **18 ns** |
+| consecutive reads that were equal | 69.1% | 0.0% |
+| idle-JVM hiccup, max | 2.8 ms | 245 µs |
+
+Five times the clock resolution and ten times the platform floor, for the same code. Which of the
+two you measure on decides what is measurable at all — and the shared, virtualised CI runner is
+the *quieter* machine here, because the laptop is running a browser and an IDE.
+
 ### Coordinated omission: the same run, measured three ways
 
 ```
