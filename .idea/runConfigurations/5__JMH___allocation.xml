@@ -1,0 +1,12 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="5. JMH - allocation (-prof gc)" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="io.github.serhiibohutskyi.latency.Launcher" />
+    <module name="latency-lab" />
+    <option name="PROGRAM_PARAMETERS" value="jmh AllocationBenchmark -prof gc" />
+    <option name="VM_PARAMETERS" value="-Xms2g -Xmx2g -XX:+AlwaysPreTouch -Dchronicle.analytics.disable=true -Dchronicle.announcer.disable=true" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

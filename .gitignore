@@ -1,0 +1,19 @@
+target/
+results/
+*.jfr
+*.hprof
+*.log
+
+# IntelliJ: everything except the shared run configurations, which are the point
+.idea/*
+!.idea/runConfigurations/
+.idea/runConfigurations/*
+!.idea/runConfigurations/*.xml
+*.iml
+*.iws
+*.ipr
+
+.vscode/
+.settings/
+.classpath
+.project

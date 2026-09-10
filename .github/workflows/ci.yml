@@ -1,0 +1,51 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build and test
+        run: mvn --batch-mode clean package
+
+      # A smoke test, not a measurement. CI runners are shared, virtualised and noisy:
+      # their latency numbers describe the runner, so nothing here asserts on a percentile.
+      # What it does assert is that every command still runs end to end.
+      - name: Smoke test - percentile arithmetic
+        run: java -jar target/lab.jar percentiles
+
+      - name: Smoke test - clock probe
+        run: java -jar target/lab.jar clock
+
+      - name: Smoke test - platform floor
+        run: java -jar target/lab.jar hiccup 5
+
+      - name: Smoke test - coordinated omission
+        run: java -jar target/lab.jar co 20000 3 5000 1000
+
+      - name: Smoke test - JLBH open loop
+        run: java -Dgateway.iterations=100000 -Dgateway.runs=2 -Dgateway.warmup=50000 -jar target/lab.jar jlbh
+
+      - name: Smoke test - JMH
+        run: java -jar target/lab.jar jmh OrderEncoderBenchmark -f 1 -wi 1 -i 2 -r 1 -w 1
+
+      # gc.alloc.rate.norm is deterministic, which is what makes it the one number in this
+      # project worth asserting on in CI. This does not assert a value, because escape
+      # analysis legitimately varies by JDK - it just proves the profiler path works.
+      - name: Smoke test - allocation profiler
+        run: java -jar target/lab.jar jmh AllocationBenchmark -f 1 -wi 1 -i 2 -r 1 -w 1 -prof gc
