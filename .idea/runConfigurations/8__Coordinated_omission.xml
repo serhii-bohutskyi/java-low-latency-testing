@@ -1,6 +1,6 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="8. Coordinated omission" type="Application" factoryName="Application">
-    <option name="MAIN_CLASS_NAME" value="io.github.serhiibohutskyi.latency.Launcher" />
+    <option name="MAIN_CLASS_NAME" value="com.bohutskyi.Launcher" />
     <module name="latency-lab" />
     <option name="PROGRAM_PARAMETERS" value="co" />
     <option name="VM_PARAMETERS" value="-Xms2g -Xmx2g -XX:+AlwaysPreTouch -Dchronicle.analytics.disable=true -Dchronicle.announcer.disable=true" />

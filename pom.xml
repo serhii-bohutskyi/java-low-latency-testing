@@ -4,7 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>io.github.serhiibohutskyi</groupId>
+  <groupId>com.bohutskyi</groupId>
   <artifactId>latency-lab</artifactId>
   <version>1.0.0</version>
   <packaging>jar</packaging>
@@ -95,7 +95,7 @@
               <finalName>${uberjar.name}</finalName>
               <transformers>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                  <mainClass>io.github.serhiibohutskyi.latency.Launcher</mainClass>
+                  <mainClass>com.bohutskyi.Launcher</mainClass>
                 </transformer>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
               </transformers>
