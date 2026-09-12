@@ -143,204 +143,241 @@ turn upward"** — and that rate, not a single p99, is the number to report.
 
 ---
 
-## Results this project produced on a developer laptop
+## Results this project produced on a quiet developer laptop
 
-Windows 11, 16 logical cores, Temurin JDK 21.0.9, G1, an ordinary machine with a browser and an
-IDE open. **These are not good absolute numbers and are not meant to be** — see "Read this before
-believing any number here" below. They are included so you can tell whether your own run is
-behaving similarly, and because several of them are more interesting than a clean result would be.
+Windows 11, 16 logical cores, Temurin JDK 21.0.9, G1. Every number below comes from **one sitting
+with the machine deliberately quieted**: browser, IDE, Edge, Teams, WhatsApp, Phone Link and
+Widgets all closed, idle CPU 3–6%. What could not be closed, and therefore sets the residual
+floor: an editor, a shell, Windows Defender, and the usual system services.
+
+**These are still not good absolute numbers and are not meant to be.** They are here so you can
+tell whether your own run behaves similarly, and because several of them are more interesting than
+a clean result would have been.
+
+### What quieting the machine changed, and what it did not
+
+The same suite had been run earlier with a browser and an IDE open. The comparison is the single
+most useful thing in this README, because it says which numbers are properties of the code and
+which are properties of the room:
+
+| | noisy machine | quiet machine | moved? |
+|---|---|---|---|
+| encoder DIRECT | 2.672 ± **0.221** | 2.343 ± **0.044** | error bar 5× tighter |
+| encoder HEAP | 3.578 ± **0.373** | 2.990 ± **0.021** | error bar 18× tighter |
+| `nanoTime()` cost | 29.191 ns | 29.546 ns | no |
+| clock resolution | 99 ns | 100 ns | no |
+| idle-JVM floor, p99 | 2.0 ms | 2.0 ms | no |
+| idle-JVM floor, max | 2.8 ms | 2.8 ms | no |
+| sweep: rate it sustained | collapsed at ρ = 0.70 | held to ρ = 0.80 | yes, a lot |
+| `stages` worst case | 62 ms | 331 µs | yes, ~200× |
+
+Two conclusions, and they point in opposite directions.
+
+The **measurements of small, CPU-bound things became far more precise** — the error bars collapsed,
+and a comparison that was inconclusive on the noisy machine became decisive. That is the case for
+benchmarking on a quiet box.
+
+But the **platform floor did not move at all**. p99 2.0 ms and max 2.8 ms on an idle JVM, with the
+machine busy or quiet. No amount of closing applications got this laptop below a ~3 ms floor,
+because that floor is scheduler and power-management behaviour, not competition for CPU. If your
+p99.99 target is under 3 ms, this machine cannot verify it however tidy you make it.
+
+### The platform floor, and a failed attribution
+
+`hiccup 60` on the quiet machine — an idle JVM, no benchmark, no load:
+
+```
+count      40,594
+mean       491.5 us
+p50        531.5 us
+p90        999.9 us
+p99        2.0 ms
+p99.9      2.3 ms
+p99.99     2.6 ms
+max        2.8 ms
+```
+
+The earlier noisy session reported a **median of 140.7 µs** for the same command — better than the
+quiet machine's 531.5 µs, which is the wrong way round. Worth chasing, so I did, and the chase is
+more instructive than a tidy answer would have been.
+
+`HiccupMeter` sleeps 1 ms and measures how late it wakes. The system timer resolution was 1.00 ms,
+and a 1 ms tick predicts a median overshoot of about half a tick — almost exactly the 531 µs
+observed. A background application holding a finer timer request would explain everything. So:
+force the resolution finer and measure the same percentile again.
+
+| condition | timer resolution | p50 | p99 | max |
+|---|---|---|---|---|
+| quiet | 1.00 ms | 531.5 µs | 2.0 ms | 2.8 ms |
+| quiet, 0.5 ms forced | 0.50 ms | **500.0 µs** | 1.5 ms | 2.4 ms |
+| quiet, 4 threads spinning | 1.00 ms | **998.9 µs** | 2.0 ms | 3.0 ms |
+
+**The median did not move.** Halving the timer resolution changed p50 by 6%, so timer granularity
+was not the cause. Keeping the cores awake — the C-state hypothesis, next on the list — made it
+*worse*, not better, which is what contention predicts and not what core parking predicts.
+
+So I cannot reproduce the 140.7 µs median, and I am not going to invent a mechanism for it. Two
+hypotheses tested, two rejected, and this is exactly the discipline the article argues for: if the
+percentile does not move, the correlation was not the cause, and you have just saved yourself from
+optimising the wrong thing.
+
+The part that *is* robust is the part that matters. Across all three conditions — quiet, finer
+timer, four cores spinning — **p99 stayed at 1.5–2.0 ms and max at 2.4–3.0 ms.** The floor's
+median is not a stable property of this machine. The floor's tail is, and the tail is what caps
+your application.
 
 ### The clock is not free, and on Windows it is coarse
 
 ```
-cost of one nanoTime() call        29 ns
-smallest non-zero delta            99 ns
-consecutive reads that were equal  1,381,629 of 2,000,000 (69.1%)
+cost of one nanoTime() call        27 ns
+smallest non-zero delta           100 ns
+consecutive reads that were equal 1,386,001 of 2,000,000 (69.3%)
+cost of a stage probe (2 calls)    54 ns
 ```
 
-`System.nanoTime()` on Windows is backed by QueryPerformanceCounter at about 10 MHz. **A single
-message through this pipeline costs a few nanoseconds, so it is smaller than the ruler.** The
-first JLBH run of this project duly reported a p50 of `0.001 us` — a picture of the clock, not of
-the encoder.
+`System.nanoTime()` here is backed by QueryPerformanceCounter at about 10 MHz. **A single message
+through this pipeline costs a few nanoseconds, so it is an order of magnitude smaller than the
+ruler** — and 69% of consecutive reads return the *same value*. The first JLBH run of this project
+duly reported a p50 of `0.001 us`: a picture of the clock, not of the encoder.
 
-That is why one scheduled arrival delivers a *burst* of messages (`-Dgateway.batch`, default 128),
-which is also what a real market-data feed does. Run configuration 12 reproduces the degenerate
+That is why one scheduled arrival delivers a *burst* of 128 messages (`-Dgateway.batch`), which is
+also what a real market-data feed does. Run configuration 12 reproduces the degenerate
 single-message case, and it is worth doing once.
 
-The same command on the Linux CI runner, for contrast — this is not a small difference:
+These three figures were identical on the noisy machine (29 ns, 99 ns, 69.1%). Clock cost is a
+property of the platform, not of the room.
+
+For contrast, the same command on the Linux CI runner:
 
 | | Windows 11 laptop | Linux CI runner |
 |---|---|---|
 | clocksource | QueryPerformanceCounter | `tsc` |
-| cost of one call | 29 ns | 17 ns |
-| smallest non-zero delta | **99 ns** | **18 ns** |
-| consecutive reads that were equal | 69.1% | 0.0% |
+| cost of one call | 27 ns | 17 ns |
+| smallest non-zero delta | **100 ns** | **18 ns** |
+| consecutive reads that were equal | 69.3% | 0.0% |
 | idle-JVM hiccup, max | 2.8 ms | 245 µs |
 
 Five times the clock resolution and ten times the platform floor, for the same code. Which of the
-two you measure on decides what is measurable at all — and the shared, virtualised CI runner is
-the *quieter* machine here, because the laptop is running a browser and an IDE.
-
-### Coordinated omission: the same run, measured three ways
-
-```
-what was measured             p50        p90        p99      p99.9     p99.99          max
-----------------------------------------------------------------------------------------------
-1. service time           0.20 us    0.30 us    0.40 us    0.70 us    5.00 us      10.1 ms
-2. response time          0.20 us    0.30 us    2.30 us     7.7 ms     9.9 ms      10.4 ms
-3. HdrHistogram patch     0.20 us    0.30 us    0.50 us     7.6 ms     9.8 ms      10.1 ms
-
-Samples above 5.0 ms:  service time 4      response time 2,109
-```
-
-Service time says p99.9 = **0.70 µs**. Response time says p99.9 = **7.7 ms**, four orders of
-magnitude worse. Both describe the same run of the same code on the same machine.
-
-The last line is the mechanism: the application froze four times, and service time recorded
-exactly four bad samples — while 2,109 arrivals were actually late. The measurement stopped
-sampling precisely while the system was failing.
-
-Row 3 is the honest caveat. HdrHistogram's interpolation lands close to the truth *here* only
-because arrivals in this harness are perfectly uniform. It reconstructs samples that were never
-taken; it cannot reproduce what a real backlog does to a system.
-
-### The tail turns upward long before saturation
-
-```
-  rho    target/s  achieved/s      p50       p99     p99.9    p99.99  p99.9/p50  1/(1-r)
------------------------------------------------------------------------------------------
- 0.10     147,738     146,552  1.00 us   1.10 us   2.20 us   24.3 us      2.2x     1.1x
- 0.30     443,214     432,070  1.00 us   1.10 us    1.2 ms    4.6 ms   1175.7x     1.4x
- 0.50     738,691     713,144  1.00 us    1.1 ms    9.6 ms   10.4 ms   9592.8x     2.0x
- 0.70   1,034,168     956,718  11.9 ms  152.3 ms  158.1 ms  158.6 ms     13.3x     3.3x  <- DID NOT KEEP UP
-```
-
-p50 is flat at 1.00 µs across the first three rows. Every one of them would support the claim
-"median latency is one microsecond". Meanwhile p99.9 goes from 2.2 µs to 1.2 ms to 9.6 ms.
-
-Note that the theory column says the queue should only be 1.4× longer at ρ = 0.30. The measured
-tail ratio went up 500×. The excess is service-time variability, and it is why "we're only at 70%
-CPU" is not the reassurance people think it is.
-
-Rows marked `DID NOT KEEP UP` have a divergent queue. That is not a steady state, and its p99 does
-not mean anything: read such a row as "cannot sustain this rate", never as "latency is N ms".
-
-### Three of five "obvious" allocation regressions allocate nothing
-
-`jmh AllocationBenchmark -prof gc`, JDK 21:
-
-| Benchmark | Regression | `gc.alloc.rate.norm` |
-|---|---|---|
-| `zeroAlloc` | none | 0 B/op |
-| `allocatesRecord` | `new Order(...)` per message | **≈0 B/op** — scalar replaced |
-| `usesBigDecimal` | `new BigDecimal(...)` | **≈0 B/op** — scalar replaced |
-| `autoboxes` | a `Long` outside the cache | 24 B/op |
-| `buildsString` | `String.valueOf` + concat | 72 B/op |
-
-The record and the `BigDecimal` never escape the benchmark method, so escape analysis proves they
-cannot be observed and scalar replacement deletes them. The profiler then honestly reports 0 B for
-code that plainly contains a `new`.
-
-Two consequences, and the second is the one that bites. Reading the source and counting
-allocations is not a substitute for measuring — and a green `gc.alloc.rate.norm` in a
-microbenchmark does not prove the same code allocates nothing in production, where the object may
-well escape into a queue, a log line or a callback. Measure the shape you actually ship.
-
-Turn the number into a prediction with the article's arithmetic — young-GC interval ≈ Eden size ÷
-allocation rate. 24 B/op at 200k msg/s is 4.8 MB/s: a collection every 53 seconds on a 256 MB
-Eden, or every 14 minutes on a 4 GB one.
-
-### JMH: the encoder, smoke run vs the real thing
-
-The short smoke run that configuration 13 uses (`-f 1 -wi 3 -i 3 -r 1 -w 1`):
-
-```
-Benchmark                     (bufferKind)  Mode  Cnt  Score   Error  Units
-OrderEncoderBenchmark.encode        DIRECT  avgt    3  3.223 ± 1.392  ns/op
-OrderEncoderBenchmark.encode          HEAP  avgt    3  3.851 ± 4.482  ns/op
-```
-
-`3.223 ± 1.392` and `3.851 ± 4.482` overlap completely, so **that run does not show DIRECT is
-faster than HEAP.** It shows the two are indistinguishable at that sample size.
-
-The same benchmark at its annotated settings — 3 forks, 5 warm-up and 8 measurement iterations,
-24 samples per row:
-
-```
-Benchmark                     (bufferKind)  Mode  Cnt  Score   Error  Units
-OrderEncoderBenchmark.encode        DIRECT  avgt   24  2.672 ± 0.221  ns/op
-OrderEncoderBenchmark.encode          HEAP  avgt   24  3.578 ± 0.373  ns/op
-```
-
-Now the intervals are `[2.451, 2.893]` and `[3.205, 3.951]`. They do not overlap, and DIRECT is
-about 25% faster. Same code, same machine, same afternoon — the only thing that changed was
-running enough of it.
-
-That pair is the most useful thing in this README. The smoke run is not *wrong*; it is
-**inconclusive**, and inconclusive looks exactly like a result if you only read the Score column.
-Read the Error column first, every time.
+two you measure on decides what is measurable at all — and the shared, virtualised CI runner is the
+*better* machine here.
 
 ### The work is smaller than the clock that measures it
 
-The whole decode → risk → encode pipeline behind a single `@Benchmark`, next to the cost of
-reading the clock — both measured the same way on the same machine:
+The whole decode → risk → encode pipeline behind a single `@Benchmark`, next to the cost of reading
+the clock — both measured the same way in the same sitting:
 
 ```
 Benchmark                            Mode  Cnt   Score   Error  Units
-GatewayPipelineBenchmark.pipeline    avgt   24   7.534 ± 0.359  ns/op
+GatewayPipelineBenchmark.pipeline    avgt   24   7.410 ± 0.562  ns/op
 
-NanoTimeBenchmark.currentTimeMillis  avgt   16   3.880 ± 0.218  ns/op
-NanoTimeBenchmark.nanoTime           avgt   16  29.191 ± 0.385  ns/op
-NanoTimeBenchmark.nanoTimePair       avgt   16  57.712 ± 0.981  ns/op
+NanoTimeBenchmark.currentTimeMillis  avgt   16   4.359 ± 0.484  ns/op
+NanoTimeBenchmark.nanoTime           avgt   16  29.546 ± 0.877  ns/op
+NanoTimeBenchmark.nanoTimePair       avgt   16  57.452 ± 0.753  ns/op
 ```
 
-The entire pipeline costs **7.5 ns**. One `System.nanoTime()` call costs **29 ns**, and the
-`t1 - t0` pair you would need in order to time the pipeline costs **58 ns** — nearly **eight times
+The entire pipeline costs **7.4 ns**. One `System.nanoTime()` call costs **29.5 ns**, and the
+`t1 - t0` pair you would need in order to time the pipeline costs **57.5 ns** — nearly **eight times
 the work being measured**.
 
 So the obvious instrumentation is not a small overhead on this operation. It is the measurement
 *replacing* the thing measured, and no amount of averaging recovers from it. This is the concrete
 reason the encoder benchmark uses `AverageTime` rather than `SampleTime`: amortise across many
-invocations and never timestamp an individual one at this scale. It is also why the JLBH task
-processes a burst of 128 messages per scheduled arrival.
+invocations, and never timestamp an individual one at this scale.
 
-Note `currentTimeMillis` at 3.9 ns — about seven times cheaper than `nanoTime` here, and useless
-for latency because its resolution is milliseconds. Cheap and wrong is still wrong.
+Note `currentTimeMillis` at 4.4 ns — about seven times cheaper than `nanoTime`, and useless for
+latency because its resolution is milliseconds. Cheap and wrong is still wrong.
 
-### The dead-code guard, and the case where it is not needed
+### JMH: what a quiet machine bought
 
 ```
-Benchmark                            Mode  Cnt  Score   Error  Units
-DeadCodeBenchmark.blackholeConsumed  avgt   16  2.684 ± 0.366  ns/op
-DeadCodeBenchmark.constantReturn     avgt   16  2.951 ± 0.476  ns/op
-DeadCodeBenchmark.derivedReturn      avgt   16  3.516 ± 0.232  ns/op
+Benchmark                     (bufferKind)  Mode  Cnt  Score   Error  Units
+OrderEncoderBenchmark.encode        DIRECT  avgt   24  2.343 ± 0.044  ns/op
+OrderEncoderBenchmark.encode          HEAP  avgt   24  2.990 ± 0.021  ns/op
 ```
 
-This is the result I expected to be dramatic. It is not — which turned out to be the more useful
-outcome, so it stays in.
+DIRECT is about **28% faster**, and the intervals `[2.299, 2.387]` and `[2.969, 3.011]` are nowhere
+near each other.
 
-`constantReturn` ends with `return buffer.position()`, which is always 21. By the usual telling
-that is no guard at all and the JIT should fold the encode away, leaving a number far below the
-others. It did not. All three land within about 0.8 ns of each other, and `constantReturn` is
-*slower* than `blackholeConsumed`, not faster.
+Compare the *same benchmark, same settings*, with a browser and an IDE open: `2.672 ± 0.221` and
+`3.578 ± 0.373`. Those overlap far more, and a short smoke run on that machine
+(`-f 1 -wi 3 -i 3`) gave `3.223 ± 1.392` against `3.851 ± 4.482` — completely inconclusive.
 
-The reason is in the benchmark body. All three write into a `ByteBuffer` held in a field, so the
-writes are side effects on an object that outlives the method. Escape analysis cannot prove they
-are unobservable, so they happen whatever the method returns. The constant return is harmless
-**here**.
+Three runs of one benchmark, three different verdicts:
+
+| run | DIRECT | HEAP | conclusion supported |
+|---|---|---|---|
+| smoke, noisy machine | 3.223 ± 1.392 | 3.851 ± 4.482 | none — intervals overlap entirely |
+| annotated, noisy machine | 2.672 ± 0.221 | 3.578 ± 0.373 | DIRECT faster, but ±14% error |
+| annotated, quiet machine | 2.343 ± 0.044 | 2.990 ± 0.021 | DIRECT faster by 28%, ±2% error |
+
+The smoke run is not *wrong*; it is **inconclusive**, and inconclusive looks exactly like a result
+if you only read the Score column. Read the Error column first, every time — and note that the
+environment moved the error bar by 18× while barely moving the score.
+
+### Three of five "obvious" allocation regressions allocate nothing
+
+`jmh AllocationBenchmark -prof gc`:
+
+| Benchmark | Regression | ns/op | `gc.alloc.rate.norm` |
+|---|---|---|---|
+| `zeroAlloc` | none | 2.524 ± 0.142 | ≈ 10⁻⁵ B/op |
+| `allocatesRecord` | `new Order(...)` per message | 2.491 ± 0.053 | **≈ 10⁻⁵ B/op** — scalar replaced |
+| `usesBigDecimal` | `new BigDecimal(...)` | 2.753 ± 0.474 | **≈ 10⁻⁵ B/op** — scalar replaced |
+| `autoboxes` | a `Long` outside the cache | 3.740 ± 0.145 | 24 B/op |
+| `buildsString` | `String.valueOf` + concat | 20.156 ± 0.166 | 72 B/op |
+
+The record and the `BigDecimal` never escape the benchmark method, so escape analysis proves they
+cannot be observed and scalar replacement deletes them. The profiler then honestly reports
+essentially zero bytes for code that plainly contains a `new`. Note `allocatesRecord` is even a
+hair *faster* than `zeroAlloc`, well inside error — there is nothing left of the allocation to cost
+anything.
+
+Two consequences, and the second is the one that bites. Reading the source and counting allocations
+is not a substitute for measuring — and a green `gc.alloc.rate.norm` in a microbenchmark does not
+prove the same code allocates nothing in production, where the object may well escape into a queue,
+a log line or a callback. Measure the shape you actually ship.
+
+The two that do allocate show why the byte count matters more than the time. `autoboxes` costs
+1.2 ns more than `zeroAlloc` and `buildsString` costs 17.6 ns more — but the number to put in CI is
+24 B/op and 72 B/op, because those are deterministic while a rate is not. Turn them into a
+prediction with the article's arithmetic: 24 B/op at 200k msg/s is 4.8 MB/s, a young collection
+every 53 seconds on a 256 MB Eden, or every 14 minutes on a 4 GB one.
+
+### The dead-code guard: three benchmarks that refuse to separate
+
+```
+                              quiet machine        noisy machine
+DeadCodeBenchmark.blackholeConsumed  2.977 ± 0.553      2.684 ± 0.366
+DeadCodeBenchmark.constantReturn     3.701 ± 0.381      2.951 ± 0.476
+DeadCodeBenchmark.derivedReturn      3.044 ± 0.443      3.516 ± 0.232
+```
+
+`constantReturn` ends with `return buffer.position()`, which is always 21. By the usual telling that
+is no guard at all and the JIT should fold the encode away, leaving a number far below the others.
+It did not — and the ordering of the three **flips between runs**: `constantReturn` is the fastest
+of the three on the noisy machine and the slowest on the quiet one.
+
+So the honest reading is that these three are indistinguishable, and any story about which is
+faster is a story about noise. (An earlier version of this README claimed `derivedReturn` was
+reliably slowest because it does more work, and priced the guard at ~0.8 ns. The quiet run
+contradicts it. The claim is withdrawn.)
+
+The reason they cannot separate is in the benchmark body: all three write into a `ByteBuffer` held
+in a field, so the writes are side effects on an object that outlives the method. Escape analysis
+cannot prove they are unobservable, so they happen whatever the method returns. **The constant
+return is harmless here.**
 
 Which is exactly the qualification the article makes: a constant return is no guard *in a benchmark
 whose body is pure computation*. Change the body to something that leaves no trace — arithmetic
 into a local, a hash, a comparison — and the same constant return lets the whole thing vanish. The
-guard is cheap insurance against a property of the benchmark body that is easy to change by
-accident.
-
-And `derivedReturn` being the slowest of the three is not noise: it does strictly more work, a
-`getLong(0)` read plus an xor. That is the price of the guard, about 0.8 ns, and it is worth paying.
+guard costs nothing measurable, and it insures against a property of the body that is easy to
+change by accident.
 
 ### Averaging five p99s was 733% wrong, in both directions
 
-`percentiles`, five runs of the same simulated service where one run hit a bad patch:
+`percentiles` is a seeded simulation, so it is deterministic and produces the same table on any
+machine — which makes it the one command here you can check your reading against rather than your
+hardware:
 
 ```
   run                           p50        p90        p99      p99.9     p99.99          max
@@ -366,10 +403,77 @@ The opposite signs are the point. Averaging percentiles is not a rough approxima
 direction you could correct for; it is an operation without meaning. `Histogram.add()` keeps every
 observation and re-reads the percentile from the real distribution.
 
-The same command also shows that summing per-stage p99s lands on the wrong side in *either*
-direction depending only on distribution shape: +7% high for light-tailed independent stages,
-−15% low for heavy-tailed ones, and −50% low once the stages are correlated — which is precisely
-what a safepoint or a descheduled thread produces.
+The same command shows that summing per-stage p99s lands on the wrong side in *either* direction
+depending only on distribution shape: **+7%** high for light-tailed independent stages, **−15%** low
+for heavy-tailed ones, and **−50%** low once the stages are correlated — which is precisely what a
+safepoint or a descheduled thread produces. "Add the stage p99s" is not a conservative bound.
+
+And on sample counts, from the same run: p99 settles by 1,000 samples, but p99.99 is still moving at
+100,000 samples because it is computed from about ten observations. Quoting it there is quoting
+noise.
+
+### Coordinated omission: the same run, measured three ways
+
+```
+what was measured             p50        p90        p99      p99.9     p99.99          max
+----------------------------------------------------------------------------------------------
+1. service time           0.60 us    1.00 us    1.50 us    1.90 us    10.6 us      10.1 ms
+2. response time          0.60 us    1.10 us    2.20 us     7.8 ms     9.8 ms      10.2 ms
+3. HdrHistogram patch     0.60 us    1.00 us    1.60 us     7.5 ms     9.8 ms      10.1 ms
+
+Samples above 5.0 ms:  service time 4      response time 2,193
+achieved rate  99,999 bursts/s (target 100,000)  ok
+```
+
+Service time says p99.9 = **1.90 µs**. Response time says p99.9 = **7.8 ms**, about four thousand
+times worse. Both describe the same run of the same code on the same machine, in the same second.
+
+The last line is the mechanism: the application froze four times, and service time recorded exactly
+four bad samples — while **2,193** arrivals were actually late. The measurement stopped sampling
+precisely while the system was failing. That is coordinated omission, and note that no load
+generator was involved: row 1 is what an ordinary `onMessage()` timer records.
+
+Row 3 is the honest caveat. HdrHistogram's `recordValueWithExpectedInterval` lands close to the
+truth *here* only because arrivals in this harness are perfectly uniform. It reconstructs samples
+that were never taken; it cannot reproduce what a real backlog does to a system — buffers filling,
+cache lines displaced, GC triggered by everything that piled up.
+
+### The tail turns upward at half the sustainable rate
+
+```
+  rho    target/s  achieved/s       p50       p99     p99.9    p99.99       max p99.9/p50  1/(1-r)
+----------------------------------------------------------------------------------------------------
+ 0.10     105,199     104,037   1.00 us   1.10 us   1.40 us   12.6 us   88.4 us      1.4x     1.1x
+ 0.30     315,597     311,932   1.00 us   1.10 us   1.63 us   11.5 us   57.6 us      1.6x     1.4x
+ 0.50     525,995     499,460   1.00 us   1.10 us   7.40 us  227.5 us  363.3 us      7.4x     2.0x  <- DID NOT KEEP UP
+ 0.70     736,393     713,778   1.00 us   1.50 us   12.9 us  235.0 us  303.4 us     12.9x     3.3x
+ 0.80     841,592     833,299   1.00 us   4.60 us  189.7 us  286.0 us  303.6 us    189.7x     5.0x
+ 0.90     946,791     911,844   24.2 ms   74.8 ms   76.9 ms   77.0 ms   77.1 ms      3.2x    10.0x
+ 0.95     999,390     907,900   49.4 ms  195.3 ms  202.1 ms  202.8 ms  202.8 ms      4.1x    20.0x  <- DID NOT KEEP UP
+ 1.05   1,104,589     911,271  187.2 ms  377.5 ms  383.8 ms  384.8 ms  384.8 ms      2.1x      inf  <- DID NOT KEEP UP
+```
+
+**p50 is pinned at 1.00 µs for the first five rows.** Every one of them would support the claim
+"median latency is one microsecond". Meanwhile p99.9 goes 1.40 → 1.63 → 7.40 → 12.9 → 189.7 µs, and
+by ρ = 0.90 the median itself has collapsed to 24.2 ms.
+
+The knee is at about **ρ = 0.50** — half the sustainable rate, not 100%. That is the concrete
+version of why "we're only at 70% CPU" is not the reassurance people think it is. And it is the
+number to report: not a p99 detached from the rate it was measured at, but *the rate at which the
+tail turns upward*.
+
+Compare the `1/(1-ρ)` column, which is what a textbook M/M/1 queue predicts, against the measured
+`p99.9/p50`. At ρ = 0.80 theory says the queue should be 5× longer; the measured tail ratio is
+190×. The excess is service-time variability — for the same average service time, a more variable
+one produces a much longer queue, which is why a component with a good p50 and a ragged p99
+saturates earlier than one that is slower on average but tight.
+
+Rows marked `DID NOT KEEP UP` have a divergent queue. That is not a steady state and its p99 does
+not mean anything: read such a row as "cannot sustain this rate", never as "latency is N ms".
+
+The floor is visible in this table too. At ρ = 0.10 the component is nearly idle, yet p99.99 is
+12.6 µs and max is 88.4 µs. That is not queueing and not the encoder — it is the machine, and no
+change to this code moves that column.
 
 ### The tail is not reproducible, and JLBH prints a column that says so
 
@@ -377,72 +481,88 @@ what a safepoint or a descheduled thread produces.
 
 ```
 Percentile   run1         run2         run3         run4         run5      % Variation
-50.0:            0.60         1.00         1.00         1.00         1.00         0.00
+50.0:            0.60         1.10         1.10         1.10         1.10         0.00
 90.0:            1.10         1.10         1.10         1.10         1.10         0.00
-99.0:            1.10         1.20         1.20         1.10         1.10         5.70
-99.7:            1.20         1.30         1.30         1.20         1.20         5.25
-99.9:            6.10        10.99         6.41         3.20         2.20        72.66
-99.97:          59.20        77.70        31.33        26.40        19.10        67.16
-99.99:         174.85       225.54        66.69        62.66        44.22        73.21
-worst:         297.47       322.05       170.75       236.80       184.58        37.13
+99.0:            1.10         1.10         1.10         1.10         1.10         0.00
+99.7:            1.20         1.20         1.10         1.10         1.10         5.70
+99.9:            7.80         3.30         1.50         1.20         1.20        53.78
+99.97:         482.82       160.51         4.30         2.90         3.00        97.31
+99.99:        1267.71       764.93         8.69         9.20         8.01        98.44
+worst:        1648.64       953.34        62.40        79.74        41.92        93.55
 
-achieved arrival rate (last run)  199,199 bursts/s  (target 200,000)
+achieved arrival rate (last run)  199,646 bursts/s  (target 200,000)
 ```
 
-Read the last column downwards. p50 and p90 are perfectly reproducible at **0.00%** variation. p99
-moves by 5.7%. p99.9 moves by **72.66%** and p99.99 by **73.21%** — run 2's p99.9 is five times run
-5's, from identical code on the same machine minutes apart.
+Read the last column downwards. p50, p90 and p99 are perfectly reproducible at **0.00%** variation.
+p99.9 moves by **53.78%**. p99.99 moves by **98.44%** — run 1's p99.99 is **158 times** run 5's,
+from identical code on a quiet machine, minutes apart.
 
-This is what "say how many samples are behind the number" looks like in practice. A single p99.9
-from a single run is not a property of the system; it is one draw from a distribution that is itself
-wide. If you are comparing two builds, a 2× "regression" at p99.9 is well inside this noise.
+Runs 1 and 2 caught something; runs 3–5 did not. This is what "say how many samples are behind the
+number" looks like in practice: a single p99.99 from a single run is not a property of the system,
+it is one draw from a distribution that is itself enormously wide. If you are comparing two builds,
+a 100× "regression" at p99.99 is well inside this noise — and the warm-up ordering is the obvious
+suspect, since the two bad runs are the first two.
 
-The achieved-rate line matters just as much: the run kept up, so these percentiles describe a steady
-state. Had it fallen short, the queue would be divergent and none of the numbers would mean
+The achieved-rate line matters just as much: the run kept up, so these percentiles describe a
+steady state. Had it fallen short, the queue would be divergent and none of the numbers would mean
 anything.
 
 ### What the stage probes cost, measured
 
-The same workload with `stages` (per-stage probes on) against `jlbh` (probes off):
+The same workload with `stages` (per-stage probes on) against `jlbh` (probes off), both on the quiet
+machine:
 
 | | probes off | probes on |
 |---|---|---|
-| p50 | 1.00 µs | 1.40 µs |
-| p90 | 1.10 µs | 1.50 µs |
-| p99 | 1.10 µs | 1.50 – 25,657 µs |
-| p99.9 | 2.20 – 10.99 µs | 10.90 – 58,917 µs |
-| worst | 322 µs | 62,194 µs |
+| p50 | 0.60 – 1.10 µs | 0.90 – 1.40 µs |
+| p99 | 1.10 µs | 1.50 µs |
+| p99.9 | 1.20 – 7.80 µs | 1.70 – 4.10 µs |
+| p99.99 | 8.01 – 1,268 µs | 19.8 – 156 µs |
+| worst | 41.9 – 1,649 µs | 122 – 331 µs |
 
-The median cost is the honest, boring part: **+0.4 µs per burst**, which is the four extra
-`nanoTime()` calls sitting inside the window `jlbh.sample()` reports. That is the tax you accept in
-exchange for knowing which stage moved.
+The median cost is the honest part: about **+0.3 µs per burst**, which is the four extra
+`nanoTime()` calls sitting inside the window `jlbh.sample()` reports. p99 pays +0.4 µs. That is the
+tax you accept in exchange for knowing which stage moved, and it is why the instrumented run is not
+the number to quote.
 
-The tail is the interesting part. With probes on, run 4 reported a p99 of **25.7 ms** and a worst of
-**62 ms**, against 1.10 µs and 322 µs with probes off. The instrumented run is not a slightly worse
-version of the real system; at the tail it is a different system. **Never quote a number from an
-instrumented run.**
+The tail is where I have to correct an earlier claim. On the noisy machine the instrumented run
+looked catastrophic — a p99 of 25.7 ms and a worst of 62 ms — and this README previously concluded
+that instrumentation makes the tail "a different system". **On the quiet machine that reverses:**
+the instrumented run's worst case (331 µs) is *better* than the uninstrumented one's (1,649 µs),
+because run-to-run outlier noise is far larger than the probes' cost. The 62 ms was the room, not
+the probes.
 
-And the stage rows demonstrate non-composition directly. Per-stage p99s were decode 0.70 µs, risk
-0.50 µs and encode 0.40 µs, summing to 1.60 µs — against a measured end-to-end p99 of anywhere
-between 1.50 µs and 25,657 µs depending on the run. The probes located where the time went. They
-did not add up to the answer.
+The conclusion that survives is narrower and duller: probes cost a few hundred nanoseconds at the
+median, and at the tail you cannot tell what they cost, because the tail is dominated by variance
+you do not control. Still do not quote an instrumented run — but because it is measurably slower at
+the median and the tail is unattributable, not because it becomes a different system.
+
+The stage rows also demonstrate non-composition directly. Per-stage p99s were decode 0.70 µs, risk
+0.50 µs and encode 0.40 µs, summing to **1.60 µs** — against a measured end-to-end p99 of
+**1.50 µs**. Here the sum *overestimates*, which is scenario A from the `percentiles` command:
+light-tailed, roughly independent stages whose bad moments rarely coincide. On a worse day the same
+sum underestimates. The probes located where the time went; they did not add up to the answer.
 
 ---
 
 ## Read this before believing any number here
 
-The `hiccup` command on the development machine reported:
+The `hiccup` command on the quiet development machine reported:
 
 ```
-p50        140.7 us
+p50        531.5 us
 p99        2.0 ms
+p99.99     2.6 ms
 max        2.8 ms
 ```
 
-That is an **idle** JVM. Nothing running, no benchmark, no load — and it was already 2.8 ms late
-at worst. So on that machine no p99.99 below roughly 3 ms means anything, no matter what the
-application does, and every microsecond-scale figure above should be read as a *relative*
-comparison rather than an absolute latency.
+That is an **idle** JVM, on a machine with the browser and the IDE shut down. Nothing running, no
+benchmark, no load — and it was already 2.8 ms late at worst. So on that machine no p99.99 below
+roughly 3 ms means anything, no matter what the application does, and every microsecond-scale
+figure above should be read as a *relative* comparison rather than an absolute latency.
+
+That floor held at p99 2.0 ms whether the machine was busy, quiet, or running with a forced 0.5 ms
+timer resolution, so it is not something you tidy your way out of.
 
 This is the point of running `hiccup` first, and it is not a flaw in the project. If production
 runs in a container with a CPU quota, then benchmarking on a tuned bare-metal box tells you about
