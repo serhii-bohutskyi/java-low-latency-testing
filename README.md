@@ -250,7 +250,9 @@ Turn the number into a prediction with the article's arithmetic — young-GC int
 allocation rate. 24 B/op at 200k msg/s is 4.8 MB/s: a collection every 53 seconds on a 256 MB
 Eden, or every 14 minutes on a 4 GB one.
 
-### JMH: the encoder
+### JMH: the encoder, smoke run vs the real thing
+
+The short smoke run that configuration 13 uses (`-f 1 -wi 3 -i 3 -r 1 -w 1`):
 
 ```
 Benchmark                     (bufferKind)  Mode  Cnt  Score   Error  Units
@@ -258,11 +260,172 @@ OrderEncoderBenchmark.encode        DIRECT  avgt    3  3.223 ± 1.392  ns/op
 OrderEncoderBenchmark.encode          HEAP  avgt    3  3.851 ± 4.482  ns/op
 ```
 
-Note the error bars, which came from a deliberately short smoke-test run. `3.223 ± 1.392` and
-`3.851 ± 4.482` overlap completely, so **this run does not show that DIRECT is faster than HEAP.**
-It shows the two are indistinguishable at this sample size. Run configuration 4 uses the annotated
-settings (3 forks, 5 warm-up and 8 measurement iterations) and takes a few minutes; use that
-before drawing a conclusion.
+`3.223 ± 1.392` and `3.851 ± 4.482` overlap completely, so **that run does not show DIRECT is
+faster than HEAP.** It shows the two are indistinguishable at that sample size.
+
+The same benchmark at its annotated settings — 3 forks, 5 warm-up and 8 measurement iterations,
+24 samples per row:
+
+```
+Benchmark                     (bufferKind)  Mode  Cnt  Score   Error  Units
+OrderEncoderBenchmark.encode        DIRECT  avgt   24  2.672 ± 0.221  ns/op
+OrderEncoderBenchmark.encode          HEAP  avgt   24  3.578 ± 0.373  ns/op
+```
+
+Now the intervals are `[2.451, 2.893]` and `[3.205, 3.951]`. They do not overlap, and DIRECT is
+about 25% faster. Same code, same machine, same afternoon — the only thing that changed was
+running enough of it.
+
+That pair is the most useful thing in this README. The smoke run is not *wrong*; it is
+**inconclusive**, and inconclusive looks exactly like a result if you only read the Score column.
+Read the Error column first, every time.
+
+### The work is smaller than the clock that measures it
+
+The whole decode → risk → encode pipeline behind a single `@Benchmark`, next to the cost of
+reading the clock — both measured the same way on the same machine:
+
+```
+Benchmark                            Mode  Cnt   Score   Error  Units
+GatewayPipelineBenchmark.pipeline    avgt   24   7.534 ± 0.359  ns/op
+
+NanoTimeBenchmark.currentTimeMillis  avgt   16   3.880 ± 0.218  ns/op
+NanoTimeBenchmark.nanoTime           avgt   16  29.191 ± 0.385  ns/op
+NanoTimeBenchmark.nanoTimePair       avgt   16  57.712 ± 0.981  ns/op
+```
+
+The entire pipeline costs **7.5 ns**. One `System.nanoTime()` call costs **29 ns**, and the
+`t1 - t0` pair you would need in order to time the pipeline costs **58 ns** — nearly **eight times
+the work being measured**.
+
+So the obvious instrumentation is not a small overhead on this operation. It is the measurement
+*replacing* the thing measured, and no amount of averaging recovers from it. This is the concrete
+reason the encoder benchmark uses `AverageTime` rather than `SampleTime`: amortise across many
+invocations and never timestamp an individual one at this scale. It is also why the JLBH task
+processes a burst of 128 messages per scheduled arrival.
+
+Note `currentTimeMillis` at 3.9 ns — about seven times cheaper than `nanoTime` here, and useless
+for latency because its resolution is milliseconds. Cheap and wrong is still wrong.
+
+### The dead-code guard, and the case where it is not needed
+
+```
+Benchmark                            Mode  Cnt  Score   Error  Units
+DeadCodeBenchmark.blackholeConsumed  avgt   16  2.684 ± 0.366  ns/op
+DeadCodeBenchmark.constantReturn     avgt   16  2.951 ± 0.476  ns/op
+DeadCodeBenchmark.derivedReturn      avgt   16  3.516 ± 0.232  ns/op
+```
+
+This is the result I expected to be dramatic. It is not — which turned out to be the more useful
+outcome, so it stays in.
+
+`constantReturn` ends with `return buffer.position()`, which is always 21. By the usual telling
+that is no guard at all and the JIT should fold the encode away, leaving a number far below the
+others. It did not. All three land within about 0.8 ns of each other, and `constantReturn` is
+*slower* than `blackholeConsumed`, not faster.
+
+The reason is in the benchmark body. All three write into a `ByteBuffer` held in a field, so the
+writes are side effects on an object that outlives the method. Escape analysis cannot prove they
+are unobservable, so they happen whatever the method returns. The constant return is harmless
+**here**.
+
+Which is exactly the qualification the article makes: a constant return is no guard *in a benchmark
+whose body is pure computation*. Change the body to something that leaves no trace — arithmetic
+into a local, a hash, a comparison — and the same constant return lets the whole thing vanish. The
+guard is cheap insurance against a property of the benchmark body that is easy to change by
+accident.
+
+And `derivedReturn` being the slowest of the three is not noise: it does strictly more work, a
+`getLong(0)` read plus an xor. That is the price of the guard, about 0.8 ns, and it is worth paying.
+
+### Averaging five p99s was 733% wrong, in both directions
+
+`percentiles`, five runs of the same simulated service where one run hit a bad patch:
+
+```
+  run                           p50        p90        p99      p99.9     p99.99          max
+  ----------------------------------------------------------------------------------------------
+  run 1                     15.4 us    25.1 us    58.6 us   105.3 us     3.3 ms       5.1 ms
+  run 2                     15.4 us    25.2 us    58.8 us   310.3 us     3.7 ms       5.9 ms
+  run 3                     15.4 us    25.2 us    59.1 us   511.0 us     3.8 ms       8.2 ms
+  run 4 (bad patch)         15.5 us    27.4 us     2.3 ms     9.3 ms     9.9 ms      10.2 ms
+  run 5                     15.4 us    25.0 us    58.9 us   502.3 us     3.7 ms       6.1 ms
+  ----------------------------------------------------------------------------------------------
+  MERGED (correct)          15.4 us    25.5 us    61.1 us     6.0 ms     9.6 ms      10.2 ms
+
+                                              p99        p99.9
+  mean of the five percentiles           509.1 us       2.2 ms
+  percentile of the merged data           61.1 us       6.0 ms
+  error from averaging                     733.0%       -64.3%
+```
+
+Averaging the five p99s overstates the true p99 by **733%** — the bad run drags the mean up.
+Averaging the five p99.9s *understates* the true p99.9 by **64%** — four healthy runs dilute it.
+
+The opposite signs are the point. Averaging percentiles is not a rough approximation with a known
+direction you could correct for; it is an operation without meaning. `Histogram.add()` keeps every
+observation and re-reads the percentile from the real distribution.
+
+The same command also shows that summing per-stage p99s lands on the wrong side in *either*
+direction depending only on distribution shape: +7% high for light-tailed independent stages,
+−15% low for heavy-tailed ones, and −50% low once the stages are correlated — which is precisely
+what a safepoint or a descheduled thread produces.
+
+### The tail is not reproducible, and JLBH prints a column that says so
+
+`jlbh` at 200,000 bursts/s, five runs of a million iterations, coordinated omission accounted for:
+
+```
+Percentile   run1         run2         run3         run4         run5      % Variation
+50.0:            0.60         1.00         1.00         1.00         1.00         0.00
+90.0:            1.10         1.10         1.10         1.10         1.10         0.00
+99.0:            1.10         1.20         1.20         1.10         1.10         5.70
+99.7:            1.20         1.30         1.30         1.20         1.20         5.25
+99.9:            6.10        10.99         6.41         3.20         2.20        72.66
+99.97:          59.20        77.70        31.33        26.40        19.10        67.16
+99.99:         174.85       225.54        66.69        62.66        44.22        73.21
+worst:         297.47       322.05       170.75       236.80       184.58        37.13
+
+achieved arrival rate (last run)  199,199 bursts/s  (target 200,000)
+```
+
+Read the last column downwards. p50 and p90 are perfectly reproducible at **0.00%** variation. p99
+moves by 5.7%. p99.9 moves by **72.66%** and p99.99 by **73.21%** — run 2's p99.9 is five times run
+5's, from identical code on the same machine minutes apart.
+
+This is what "say how many samples are behind the number" looks like in practice. A single p99.9
+from a single run is not a property of the system; it is one draw from a distribution that is itself
+wide. If you are comparing two builds, a 2× "regression" at p99.9 is well inside this noise.
+
+The achieved-rate line matters just as much: the run kept up, so these percentiles describe a steady
+state. Had it fallen short, the queue would be divergent and none of the numbers would mean
+anything.
+
+### What the stage probes cost, measured
+
+The same workload with `stages` (per-stage probes on) against `jlbh` (probes off):
+
+| | probes off | probes on |
+|---|---|---|
+| p50 | 1.00 µs | 1.40 µs |
+| p90 | 1.10 µs | 1.50 µs |
+| p99 | 1.10 µs | 1.50 – 25,657 µs |
+| p99.9 | 2.20 – 10.99 µs | 10.90 – 58,917 µs |
+| worst | 322 µs | 62,194 µs |
+
+The median cost is the honest, boring part: **+0.4 µs per burst**, which is the four extra
+`nanoTime()` calls sitting inside the window `jlbh.sample()` reports. That is the tax you accept in
+exchange for knowing which stage moved.
+
+The tail is the interesting part. With probes on, run 4 reported a p99 of **25.7 ms** and a worst of
+**62 ms**, against 1.10 µs and 322 µs with probes off. The instrumented run is not a slightly worse
+version of the real system; at the tail it is a different system. **Never quote a number from an
+instrumented run.**
+
+And the stage rows demonstrate non-composition directly. Per-stage p99s were decode 0.70 µs, risk
+0.50 µs and encode 0.40 µs, summing to 1.60 µs — against a measured end-to-end p99 of anywhere
+between 1.50 µs and 25,657 µs depending on the run. The probes located where the time went. They
+did not add up to the answer.
 
 ---
 
