@@ -112,6 +112,12 @@ public final class Launcher {
                 com.bohutskyi.jlbh.ThroughputSweep.main(rest);
             }
 
+            case "report" -> {
+                banner("Regenerate the README results",
+                        "Numbers should live in one place: the run that produced them.");
+                com.bohutskyi.report.ReportGenerator.main(rest);
+            }
+
             case "percentiles" -> {
                 banner("Percentile arithmetic",
                         "Three claims about percentiles, each turned into a number.");
@@ -218,6 +224,12 @@ public final class Launcher {
               ANALYSIS
                 percentiles               Why averaging percentiles, composing them across
                                           stages, and quoting p99.99 from 10k samples are wrong.
+
+              MAINTENANCE
+                report [--quick]          Run the suite and write its tables back into README.md
+                       [--out f]          between the BEGIN/END GENERATED markers, so the numbers
+                       [--only a,b]       in the file are the numbers this machine measured.
+                                          Full run takes ~20 minutes.
 
               Results are written to ./results/*.hgrm - plot them at
               https://hdrhistogram.github.io/HdrHistogram/plotFiles.html
